@@ -23,8 +23,17 @@ jobs:
 
       - run: pip install pyproj
 
+      - name: Comprobar acceso a las fuentes
+        run: |
+          curl -s -m 60 -o /dev/null -w "Junta lastUpdate: %{http_code} %{time_total}s
+" "https://datos.juntadeandalucia.es/api/v0/openrta/search/lastUpdateData" || echo "Junta: sin respuesta"
+          curl -s -m 120 -o /dev/null -w "Junta busqueda (3): %{http_code} %{time_total}s
+" "https://datos.juntadeandalucia.es/api/v0/openrta/search?id=-&object_type=Vivienda%20de%20uso%20tur%C3%ADstico&category=-&group=-&modality=-&province=-&municipality=MARBELLA&order_by=id&format=json&size=3&mode=ASC" || echo "Junta busqueda: sin respuesta"
+          curl -s -m 60 -o /dev/null -w "Catastro: %{http_code} %{time_total}s
+" "https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/Consulta_DNPRC?Provincia=&Municipio=&RC=9100101UF3490S" || echo "Catastro: sin respuesta"
+
       - name: Registro de Turismo de Andalucía (RTA)
-        run: python generar_mapa.py
+        run: python -u generar_mapa.py
 
       - name: Catastro (solo parcelas nuevas o pendientes)
         run: python generar_edificios.py

@@ -113,7 +113,7 @@ for r in recs:
 json.dump(idx, open(OUT_IDX, "w", encoding="utf8"), ensure_ascii=False)
 
 with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
-    w = csv.writer(f, delimiter=";")
+    w = csv.writer(f, delimiter=";", lineterminator="\n")
     w.writerow(["registro", "direccion", "cp", "ref_catastral", "plazas", "habitaciones", "modalidad", "alta", "lon", "lat"])
     for v in puntos:
         w.writerow([v["reg"], v["dir"], v["cp"], v["rc"], v["plazas"], v["habs"], v["mod"], v["alta"], f"{v['lon']:.6f}", f"{v['lat']:.6f}"])

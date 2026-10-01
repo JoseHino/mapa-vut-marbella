@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa VUT Marbella</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module" src="edificio3d.js"></script>
+<style>
+  :root { --ink:#222; --muted:#666; --line:#e4e4e4; --bg:#fff; --acc:#1044CD; --acc2:#1ADEB1; --hot:#d7191c; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; font-family:"Segoe UI", system-ui, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  #map { position:absolute; inset:0; }
+  #panel { position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-height:calc(100% - 24px); overflow:auto;
+           background:rgba(255,255,255,.96); border-radius:10px; box-shadow:0 4px 18px rgba(0,0,0,.18); padding:14px 16px; font-size:13px; }
+  #panel h1 { font-size:17px; margin:0 0 2px; }
+  #panel .sub { color:var(--muted); font-size:12px; margin-bottom:12px; }
+  .kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; }
+  .kpi { border-left:3px solid var(--acc2); padding:2px 0 2px 8px; }
+  .kpi b { display:block; font-size:18px; font-variant-numeric:tabular-nums; }
+  .kpi span { font-size:11px; color:var(--muted); }
+  .sec { border-top:1px solid var(--line); padding-top:10px; margin-top:10px; }
+  .sec h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 6px; }
+  label { display:flex; align-items:center; gap:6px; margin:4px 0; cursor:pointer; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin:4px 0 8px; }
+  .seg button { flex:1; border:0; background:#fff; padding:5px 0; font:inherit; font-size:12px; cursor:pointer; }
+  .seg button.on { background:var(--acc); color:#fff; }
+  input[type=range] { width:100%; }
+  .grad { height:10px; border-radius:5px; background:linear-gradient(90deg,#0033ff,#00ffff,#00ff00,#ffff00,#ff6600,#ff0033); }
+  .gradlab { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
+  .bars { display:flex; align-items:flex-end; gap:2px; height:60px; }
+  .bars div { flex:1; background:var(--acc); border-radius:2px 2px 0 0; min-height:1px; }
+  .barlab { display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:2px; }
+  table.cp { width:100%; border-collapse:collapse; font-size:12px; }
+  table.cp td { padding:2px 0; } table.cp td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .src { font-size:11px; color:var(--muted); line-height:1.45; }
+  .src a { color:var(--acc); }
+  #toggle { display:none; }
+  .pop { font-size:12px; width:400px; max-width:80vw; }
+  .pop h3 { margin:0 0 2px; font-size:13px; }
+  .pop .meta { color:var(--muted); margin-bottom:6px; }
+  .pop .lst { max-height:180px; overflow:auto; border:1px solid var(--line); border-radius:4px; }
+  .pop table { width:100%; border-collapse:collapse; font-size:11px; }
+  .pop th { position:sticky; top:0; background:#f4f4f4; text-align:left; padding:3px 4px; }
+  .pop td { padding:2px 4px; border-top:1px solid #f0f0f0; white-space:nowrap; }
+  .pop .links { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
+  .pop .links a { background:#444; color:#fff; padding:3px 8px; border-radius:3px; text-decoration:none; font-size:11px; }
+  .pop .links a.g { background:#1a73e8; }
+  .pop .b3d { display:block; width:100%; margin:0 0 8px; border:0; border-radius:4px; background:#1044CD; color:#fff; font:inherit; font-weight:600; padding:7px; cursor:pointer; } .pop .links a.s { background:#34a853; }
+  @media (max-width:640px) {
+    #panel { width:auto; right:12px; max-height:46%; }
+    #panel.min > :not(header) { display:none; }
+    #toggle { display:inline-block; float:right; border:1px solid var(--line); background:#fff; border-radius:4px; font-size:12px; padding:2px 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <header><button id="toggle">ocultar</button>
+    <h1>Viviendas de uso turístico · Marbella</h1>
+    <div class="sub" id="sub"></div>
+  </header>
+  <div class="kpis">
+    <div class="kpi"><b id="k1"></b><span>VUT</span></div>
+    <div class="kpi"><b id="k2"></b><span>plazas</span></div>
+    <div class="kpi"><b id="k3"></b><span>parcelas</span></div>
+  </div>
+  <div class="sec">
+    <h2>Mapa de calor ponderado por</h2>
+    <div class="seg"><button data-w="n" class="on">Nº de viviendas</button><button data-w="p">Nº de plazas</button></div>
+    <label>Intensidad <input type="range" id="int" min="0.2" max="3" step="0.1" value="1"></label>
+    <div class="grad"></div><div class="gradlab"><span>baja densidad</span><span>alta</span></div>
+  </div>
+  <div class="sec">
+    <h2>Capas</h2>
+    <label><input type="checkbox" id="cHeat" checked> Mapa de calor</label>
+    <label><input type="checkbox" id="cEdif" checked> Edificios / parcelas (tamaño = nº VUT, clic para ficha)</label>
+    <div class="src" id="zhint">Acerca el mapa (zoom 16 o más) para ver los edificios. <a href="#" id="zgo">Ir a la zona más densa</a></div>
+  </div>
+  <div class="sec">
+    <h2>Altas en el registro por año</h2>
+    <div class="bars" id="bars"></div><div class="barlab" id="barlab"></div>
+  </div>
+  <div class="sec">
+    <h2>Por código postal (principales)</h2>
+    <table class="cp" id="cps"></table>
+  </div>
+  <div class="sec src" id="src"></div>
+</div>
+<script>
+const HEAT = /*__HEAT__*/null;  // [lat, lon, plazas] de cada VUT (coordenadas RTA)
+const DATA = /*__DATA__*/null;   // [lat, lon, calle, cp, rc14, [[signatura, piso, plazas, dormit, alta, m2], ...]]
+const META = /*__META__*/null;
+const fmt = n => n.toLocaleString('es-ES');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+document.getElementById('sub').textContent = `Registro de Turismo de Andalucía (RTA) · descarga ${META.fecha}`;
+k1.textContent = fmt(META.total); k2.textContent = fmt(META.plazas); k3.textContent = fmt(META.edificios);
+
+const map = L.map('map', { zoomControl:false, preferCanvas:true });
+map.fitBounds(L.latLngBounds(DATA.map(d => [d[0], d[1]])), { paddingTopLeft: innerWidth > 640 ? [330, 20] : [10, 10], paddingBottomRight:[20, 20] });
+L.control.zoom({ position:'topright' }).addTo(map);
+L.control.scale({ imperial:false, position:'bottomright' }).addTo(map);
+const bases = {
+  'Gris (Esri)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom:16, maxZoom:20, attribution:'© Esri' }),
+  'Mapa base IGN': L.tileLayer('https://www.ign.es/wmts/ign-base?layer=IGNBaseTodo&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image/jpeg&TileMatrix={z}&TileCol={x}&TileRow={y}', { maxNativeZoom:19, maxZoom:20, attribution:'© IGN' }),
+  'Ortofoto PNOA': L.tileLayer('https://www.ign.es/wmts/pnoa-ma?layer=OI.OrthoimageCoverage&style=default&tilematrixset=GoogleMapsCompatible&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image/jpeg&TileMatrix={z}&TileCol={x}&TileRow={y}', { maxNativeZoom:19, maxZoom:20, attribution:'PNOA © IGN' }),
+  'Catastro': L.tileLayer.wms('https://ovc.catastro.meh.es/Cartografia/WMS/ServidorWMS.aspx', { layers:'Catastro', format:'image/png', maxZoom:20, attribution:'© Dirección General del Catastro' }),
+};
+bases['Gris (Esri)'].addTo(map);
+L.control.layers(bases, null, { position:'topright' }).addTo(map);
+
+// --- heatmap ---
+const GRAD = { 0.1:'#0033ff', 0.3:'#00ffff', 0.5:'#00ff00', 0.7:'#ffff00', 0.85:'#ff6600', 1:'#ff0033' };
+let peso = 'n';
+const heat = L.heatLayer([], { radius:22, blur:18, minOpacity:0.35, maxZoom:16, gradient:GRAD }).addTo(map);
+function pts() {
+  return HEAT.map(h => [h[0], h[1], peso === 'n' ? 1 : h[2]]);
+}
+function redraw() {
+  const p = pts();
+  const w = p.map(x => x[2]).sort((a, b) => a - b);
+  const ref = w[Math.floor(w.length * 0.9)] || 1;     // percentil 90 por vivienda como referencia
+  heat.setOptions({ max: ref * 40 / +int.value });
+  heat.setLatLngs(p);
+}
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.seg button').forEach(x => x.classList.toggle('on', x === b));
+  peso = b.dataset.w; redraw();
+});
+int.oninput = redraw;
+redraw();
+
+// --- edificios ---
+const edif = L.layerGroup();
+const ZOOM_EDIF = 16;
+DATA.forEach((d, i) => {
+  const n = d[5].length, pl = d[5].reduce((a, u) => a + u[2], 0);
+  const m = L.circleMarker([d[0], d[1]], {
+    radius: 3 + Math.sqrt(n) * 1.3, color:'#7a0000', weight:1, fillColor:'#d7191c', fillOpacity:0.6,
+  }).addTo(edif);
+  m.bindTooltip(`${esc(d[2])} · ${n} VUT · ${pl} plazas`);
+  m.bindPopup(() => {
+    const filas = d[5].map(u => `<tr><td>${esc(u[0])}</td><td>${esc(u[1].replace(/Es:T Pl:OD Pt:OS/, '—'))}</td><td>${u[2]}</td><td>${u[3]}</td><td>${esc(u[4])}</td></tr>`).join('');
+    return `<div class="pop"><h3>${esc(d[2])}</h3>
+      ${d[4] ? `<button class="b3d" onclick="abrir3D(DATA[${i}])">Ver edificio en 3D: VUT por planta</button>` : ''}
+      <div class="meta">CP ${esc(d[3])} · <b>${n}</b> VUT · <b>${pl}</b> plazas${d[4] ? `<br>Parcela catastral <code>${esc(d[4])}</code>` : ''}</div>
+      <div class="lst"><table><tr><th>Registro</th><th>Bloque/planta/puerta</th><th>Plazas</th><th>Hab.</th><th>Alta</th></tr>${filas}</table></div>
+      <div class="links">
+        <a class="g" target="_blank" href="https://www.google.com/maps/search/?api=1&query=${d[0]},${d[1]}">Google Maps</a>
+        <a class="s" target="_blank" href="https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${d[0]},${d[1]}">Street View</a>
+        <a target="_blank" href="https://www1.sedecatastro.gob.es/Cartografia/mapa.aspx?refcat=${d[4]}">Catastro</a>
+      </div></div>`;
+  }, { maxWidth:440 });
+});
+cHeat.onchange = () => cHeat.checked ? heat.addTo(map) : map.removeLayer(heat);
+function syncEdif() {
+  const ver = cEdif.checked && map.getZoom() >= ZOOM_EDIF;
+  ver ? edif.addTo(map) : map.removeLayer(edif);
+  zhint.style.display = cEdif.checked && !ver ? 'block' : 'none';
+}
+cEdif.onchange = syncEdif; map.on('zoomend', syncEdif); syncEdif();
+
+// --- panel: años y CP ---
+const an = META.anios.filter(a => +a[0] >= 2010);
+const mx = Math.max(...an.map(a => a[1]));
+bars.innerHTML = an.map(a => `<div title="${a[0]}: ${fmt(a[1])} altas" style="height:${a[1] / mx * 100}%"></div>`).join('');
+barlab.innerHTML = `<span>${an[0][0]}</span><span>${an[an.length - 1][0]}</span>`;
+const antes = META.anios.filter(a => +a[0] < 2010).reduce((s, a) => s + a[1], 0);
+if (antes) barlab.insertAdjacentHTML('afterend', `<div class="src">Anteriores a 2010: ${fmt(antes)}</div>`);
+cps.innerHTML = META.cps.map(c => `<tr><td>${esc(c[0])}</td><td>${fmt(c[1])} (${(c[1] / META.registro * 100).toFixed(1)} %)</td></tr>`).join('');
+
+src.innerHTML = `<b>Fuentes oficiales.</b> Viviendas y posición: <a target="_blank" href="https://www.juntadeandalucia.es/datosabiertos/portal.html">Registro de Turismo de Andalucía</a> (Junta de Andalucía, API OpenRTA), ${fmt(META.registro)} VUT inscritas en Marbella, cada una con sus coordenadas.
+  Edificios y vista 3D: <a target="_blank" href="https://www.catastro.hacienda.gob.es/">Dirección General del Catastro</a>, a partir de la referencia catastral de cada vivienda; las VUT se agrupan por parcela (en urbanizaciones, una parcela puede tener varios bloques).
+  ${META.sin_geo ? `${META.sin_geo} VUT sin coordenadas válidas no aparecen en el mapa.` : ''}`;
+
+zgo.onclick = e => { e.preventDefault(); map.setView([DATA[0][0], DATA[0][1]], 17); };
+toggle.onclick = () => { panel.classList.toggle('min'); toggle.textContent = panel.classList.contains('min') ? 'mostrar' : 'ocultar'; };
+</script>
+</body>
+</html>

@@ -4,16 +4,18 @@
 
 15.457 VUT situadas en el mapa (de 15.781 inscritas), 90.180 plazas, en 3.733 parcelas catastrales (descarga del 01/10/2026).
 
-## Actualización automática
-Se actualiza **cada día a las 08:00** con una tarea programada de Windows en el ordenador de AMMA (`actualizar_local.cmd`, lanzado por `actualizar_mapas_vut.cmd`). Si el equipo está apagado a esa hora, se ejecuta al encenderlo.
-1. Descarga el registro turístico completo y regenera el mapa. Si la descarga falla o llega incompleta, no se publica nada y se mantiene la versión anterior.
-2. Pregunta al Catastro solo por las parcelas nuevas o pendientes (como mucho 1.500 por día); en el resto solo recalcula qué viviendas son VUT.
-3. Publica en GitHub solo si algo ha cambiado.
+## Actualización automática (GitHub Actions)
+Todo funciona en GitHub, sin depender de ningún ordenador. Una tarea (`.github/workflows/actualizar.yml`) se ejecuta **cada día a las 07:30** (hora de Madrid):
+1. Descarga el registro turístico completo y regenera el mapa de calor y las fichas. Si la descarga falla o no cuadra, no se publica nada y se mantiene la versión anterior.
+2. Recalcula qué viviendas de cada edificio son VUT sobre la **base fija del Catastro** (unidades y volumetría), así que una VUT nueva en un edificio conocido aparece también en su planta del 3D. Los edificios nuevos salen en el mapa y su 3D se incorpora en la siguiente actualización de la base.
+3. Publica solo si algo ha cambiado.
 
-No se usa GitHub Actions porque, desde sus servidores (fuera de España), la API de la Junta corta las descargas grandes y el servicio de unidades del Catastro rechaza la conexión.
+También se puede lanzar a mano desde **Actions → Actualizar datos → Run workflow**.
+
+**Actualizar la base del Catastro** (los edificios cambian poco; basta una vez al año): ejecutar `python generar_edificios.py` sin `OFFLINE` desde un equipo en España (el servicio de unidades del Catastro no responde a los servidores de GitHub) y subir `data/edificios/`.
 
 ## Fuentes oficiales
-- **Registro de Turismo de Andalucía (RTA)**: API OpenRTA de la Junta de Andalucía. Cada VUT trae sus coordenadas (UTM ETRS89 huso 30), su referencia catastral y su bloque, planta y puerta. 324 VUT vienen sin coordenadas válidas y no aparecen en el mapa.
+- **Registro de Turismo de Andalucía (RTA)**: Junta de Andalucía, descarga completa del dataset OpenRTA (se regenera cada noche). Cada VUT trae sus coordenadas (UTM ETRS89 huso 30), su referencia catastral y su bloque, planta y puerta. 324 VUT vienen sin coordenadas válidas y no aparecen en el mapa.
 - **Dirección General del Catastro**: unidades de cada edificio (`Consulta_DNPRC`) y volumetría (INSPIRE, edificios).
 
 ## Mapa
@@ -30,5 +32,5 @@ Limitaciones:
 ## Archivos
 - `index.html`: el mapa (Leaflet). `edificio3d.js`: visor 3D (three.js).
 - `VUT_Marbella_geolocalizadas.csv`: las VUT con lat/lon (EPSG:4326).
-- `generar_mapa.py`: descarga el RTA y regenera `index.html` y `vut_index.json`.
+- `generar_mapa.py`: descarga el RTA completo (por trozos) y regenera `index.html` y `vut_index.json`.
 - `generar_edificios.py`: descarga del Catastro las unidades y la volumetría de cada parcela y genera `data/edificios/*.json`.

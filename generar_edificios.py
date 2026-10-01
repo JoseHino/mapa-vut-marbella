@@ -7,10 +7,14 @@ Para cada parcela con VUT necesita del Catastro:
 y cruza las VUT del registro turistico por referencia catastral (vut_index.json,
 generado por generar_mapa.py: rc18 -> [registro(s), plazas, alta, nº VUT]).
 
-Incremental: si la parcela ya tiene ficha en data/edificios/ (o XML en cache_catastro/),
-reutiliza las unidades y la volumetria y solo recalcula que unidades son VUT. Solo se
-pregunta al Catastro por parcelas nuevas, con un tope por ejecucion y parando en cuanto
-el Catastro avisa del limite de peticiones por hora (las restantes quedan para la siguiente).
+Base fija + actualizacion diaria:
+ - La base (unidades y volumetria de cada parcela) cambia muy poco: se descarga del Catastro
+   solo cuando se ejecuta sin OFFLINE (refresco manual, p. ej. anual, desde un equipo en Espana;
+   el servicio de unidades del Catastro no responde a los servidores de GitHub).
+ - Cada dia (OFFLINE=1, en GitHub Actions) se reutiliza esa base y solo se recalcula que
+   unidades son VUT, de modo que una VUT nueva en un edificio conocido aparece tambien en el 3D.
+ - Las parcelas nuevas quedan "pendientes" de 3D hasta el siguiente refresco de la base.
+ - Las fichas no se borran aunque la parcela se quede sin VUT (se reescriben con 0 VUT).
 
 Salida: data/edificios/<parcela>.json
 """
@@ -113,11 +117,10 @@ for rc, v in vut.items():
 pcs = sorted(por_pc)
 hoy = time.strftime("%Y-%m-%d")
 
-# fichas de parcelas que ya no tienen VUT
-borradas = 0
-for f in glob.glob(os.path.join(OUT, "*.json")):
-    if os.path.basename(f)[:-5] not in por_pc:
-        os.remove(f); borradas += 1
+# parcelas con ficha que ya no tienen VUT: se conservan (base) y se reescriben sin VUT
+previas = {os.path.basename(f)[:-5] for f in glob.glob(os.path.join(OUT, "*.json"))}
+sin_vut = previas - set(pcs)
+pcs = sorted(set(pcs) | previas)
 
 nuevas = 0
 lock = threading.Lock()
@@ -141,7 +144,7 @@ def procesa(pc):
         u = unidades(dnp)
         err = tag("des", dnp) if not u else None      # p. ej. "NO EXISTE NINGUN INMUEBLE..."
         b = {"c": c, "cuerpos": cuerpos, "u": u, "error": err, "visto": hoy}
-    vs = por_pc[pc]
+    vs = por_pc.get(pc, {})
     filas = [[es, pt, pu, uso, vs.get(car, 0), car] for es, pt, pu, uso, car in b["u"]]
     j = {"pc": pc, "c": b["c"], "cuerpos": b["cuerpos"], "u": filas,
          "vut": sum(v[3] for v in vs.values()),
@@ -157,8 +160,9 @@ with ThreadPoolExecutor(1 if OFFLINE else 6) as ex:
     res = dict(ex.map(procesa, pcs))
 
 pend = [p for p, s in res.items() if s == "pendiente"]
+pcs = [p for p in pcs if p not in sin_vut]
 print(f"Parcelas con VUT: {len(pcs)} | con ficha: {len(pcs) - len(pend)} | pendientes: {len(pend)} | "
-      f"consultadas al Catastro: {nuevas} | fichas borradas: {borradas}"
+      f"consultadas al Catastro: {nuevas} | fichas sin VUT conservadas: {len(sin_vut)}"
       + (" | LIMITE DEL CATASTRO ALCANZADO" if limite.is_set() else ""))
 json.dump({"parcelas": len(pcs), "pendientes": len(pend), "fecha": hoy},
           open(os.path.join(BASE, "data", "estado_edificios.json"), "w"))

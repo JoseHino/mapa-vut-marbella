@@ -1,0 +1,41 @@
+name: Actualizar datos
+
+on:
+  schedule:
+    - cron: "30 5 * * *"      # cada día, 07:30 en Madrid (horario de verano)
+  workflow_dispatch:           # ejecución manual desde la pestaña Actions
+
+permissions:
+  contents: write
+
+concurrency: actualizar
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyproj
+
+      - name: Registro de Turismo de Andalucía (dataset completo)
+        run: python -u generar_mapa.py
+
+      - name: VUT por planta en el 3D (base del Catastro fija, sin consultas)
+        run: python -u generar_edificios.py
+        env:
+          OFFLINE: "1"
+
+      - name: Publicar si hay cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898888+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
+          git commit -m "Actualización automática $(date -u +%F)"
+          git push

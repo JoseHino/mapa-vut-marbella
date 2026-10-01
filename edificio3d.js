@@ -295,7 +295,7 @@ window.abrir3D = async d => {
   try {
     const res = await fetch(`data/edificios/${d[4]}.json`);
     if (res.status === 404) {
-      load.textContent = 'La vista 3D de esta parcela aún no está disponible (pendiente de descarga del Catastro).';
+      load.textContent = 'Edificio nuevo en el registro: su vista 3D se incorporará en la próxima actualización de la base del Catastro.';
       return;
     }
     const j = await res.json();

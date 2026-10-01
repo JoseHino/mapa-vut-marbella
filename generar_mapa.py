@@ -1,9 +1,11 @@
 """
 Mapa de calor de Viviendas de Uso Turistico (VUT) de Marbella.
 
-Fuente oficial: Registro de Turismo de Andalucia (RTA), API OpenRTA de la
-Junta de Andalucia. Cada VUT trae sus coordenadas (UTM ETRS89 30N) y su
-referencia catastral.
+Fuente oficial: Registro de Turismo de Andalucia (RTA), Junta de Andalucia.
+Se usa la descarga completa del dataset (OpenRTA /all, JSON regenerado cada noche),
+bajada en trozos (rangos HTTP) porque el servidor corta las descargas largas; la API
+de busqueda solo se usa para contrastar el total de VUT de Marbella.
+Cada VUT trae sus coordenadas (UTM ETRS89 30N) y su referencia catastral.
 
  - Mapa de calor: coordenadas de cada VUT segun el RTA.
  - Edificios: VUT agrupadas por parcela catastral (14 primeros caracteres de la RC).
@@ -27,23 +29,36 @@ def get_json(url, timeout):
     return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8"))
 
 
-def pagina(modo, size=8000):
-    # La API no pagina y con 10.000 registros suele colgarse: dos lotes de 8.000 (ASC y DESC)
-    path = os.path.join(BASE, f"rta_{modo}.json")
-    if os.environ.get("USE_CACHE") == "1" and os.path.exists(path):
-        return json.load(open(path, encoding="utf8"))
-    q = {"id": "-", "object_type": "Vivienda de uso turístico", "category": "-", "group": "-",
-         "modality": "-", "province": "-", "municipality": "MARBELLA", "order_by": "id",
-         "mode": modo, "format": "json", "size": str(size)}
-    for intento in range(4):
-        try:
-            d = get_json(API + "/search?" + urllib.parse.urlencode(q), 900)
-            json.dump(d, open(path, "w", encoding="utf8"), ensure_ascii=False)
-            return d
-        except Exception as e:
-            print(f"RTA {modo}: intento {intento + 1} fallido ({e})", flush=True)
-            time.sleep(60)
-    sys.exit("No se ha podido descargar el RTA; no se publica nada")
+DATASET = "https://www.juntadeandalucia.es/ssdigitales/festa/download-pro/dataset-openrta.json"
+UA = {"User-Agent": "Mozilla/5.0"}
+
+
+def descarga_por_trozos(url, path, trozo=4 * 1024 * 1024):
+    h = urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers=UA), timeout=60)
+    total, etag = int(h.headers["Content-Length"]), h.headers.get("ETag")
+    with open(path, "wb") as f:
+        pos = 0
+        while pos < total:
+            fin = min(pos + trozo, total) - 1
+            for intento in range(8):
+                try:
+                    req = urllib.request.Request(url, headers={**UA, "Range": f"bytes={pos}-{fin}"})
+                    r = urllib.request.urlopen(req, timeout=120)
+                    if etag and r.headers.get("ETag") not in (None, etag):
+                        sys.exit("El dataset ha cambiado durante la descarga; no se publica nada")
+                    b = r.read()
+                    if len(b) == fin - pos + 1:
+                        break
+                except Exception as e:
+                    print(f"  trozo {pos}: intento {intento + 1} fallido ({e})", flush=True)
+                time.sleep(5 * (intento + 1))
+            else:
+                sys.exit(f"No se ha podido descargar el trozo {pos}-{fin} del RTA; no se publica nada")
+            f.write(b)
+            pos = fin + 1
+    if os.path.getsize(path) != total:
+        sys.exit("Descarga del RTA incompleta; no se publica nada")
+    print(f"RTA completo descargado: {total / 1e6:.0f} MB", flush=True)
 
 
 # -- 1. Registro ----------------------------------------------------------------
@@ -51,11 +66,27 @@ try:
     rta_fecha = str(get_json(API + "/search/lastUpdateData", 60).get("date") or "")[:10]
 except Exception:
     rta_fecha = ""
-asc, desc = pagina("ASC"), pagina("DESC")
-recs = list({r["id"]: r for r in asc["results"] + desc["results"]}.values())
-print(f"RTA ({rta_fecha}): {asc['total_hits']} VUT declaradas, {len(recs)} descargadas")
-if len(recs) < asc["total_hits"]:
-    sys.exit("Faltan registros del RTA (¿más de 16.000 VUT?): hay que añadir otro lote; no se publica nada")
+ruta = os.path.join(BASE, "rta_completo.json")
+if os.environ.get("USE_CACHE") != "1" or not os.path.exists(ruta):
+    descarga_por_trozos(DATASET, ruta)
+todos = json.load(open(ruta, encoding="utf8"))
+recs = [r for r in todos if r.get("object_type_id") == 46
+        and str(r.get("municipalities") or "").strip().upper() == "MARBELLA"]
+del todos
+print(f"RTA ({rta_fecha}): {len(recs)} VUT en Marbella", flush=True)
+
+# contraste con el total que da la API de busqueda (consulta pequena, funciona desde GitHub)
+try:
+    q = {"id": "-", "object_type": "Vivienda de uso turístico", "category": "-", "group": "-", "modality": "-",
+         "province": "-", "municipality": "MARBELLA", "order_by": "id", "mode": "ASC", "format": "json", "size": "1"}
+    esperado = get_json(API + "/search?" + urllib.parse.urlencode(q), 120)["total_hits"]
+    print(f"API: {esperado} VUT en Marbella")
+    if abs(len(recs) - esperado) > max(20, esperado * 0.01):
+        sys.exit("El dataset completo no cuadra con la API; no se publica nada")
+except (KeyError, OSError, ValueError) as e:
+    print(f"(no se ha podido contrastar con la API: {e})")
+if len(recs) < 10000:
+    sys.exit("Registro sospechosamente corto; no se publica nada")
 
 tr = Transformer.from_crs("EPSG:25830", "EPSG:4326", always_xy=True)
 

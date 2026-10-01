@@ -1,49 +1,60 @@
 """
-Datos por edificio para la vista 3D del mapa de VUT de Marbella.
+Datos por edificio para la vista 3D del mapa de VUT (incremental).
 
-Para cada parcela con VUT descarga del Catastro:
+Para cada parcela con VUT necesita del Catastro:
  - Consulta_DNPRC (14 car.): todas las unidades del edificio con escalera/planta/puerta.
  - INSPIRE WFS BU (GetBuildingPartByParcel): huella de cada cuerpo y nº de plantas.
-y cruza las VUT del Registro de Turismo de Andalucia (RTA) por referencia catastral
-(vut_index.json, generado por generar_mapa.py).
+y cruza las VUT del registro turistico por referencia catastral (vut_index.json,
+generado por generar_mapa.py: rc18 -> [registro(s), plazas, alta, nº VUT]).
+
+Incremental: si la parcela ya tiene ficha en data/edificios/ (o XML en cache_catastro/),
+reutiliza las unidades y la volumetria y solo recalcula que unidades son VUT. Solo se
+pregunta al Catastro por parcelas nuevas, con un tope por ejecucion y parando en cuanto
+el Catastro avisa del limite de peticiones por hora (las restantes quedan para la siguiente).
 
 Salida: data/edificios/<parcela>.json
 """
 
-import csv, json, os, re, time, urllib.request
+import glob, json, os, re, threading, time, urllib.request
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 IDX = os.path.join(BASE, "vut_index.json")
-RAW = os.path.join(BASE, "cache_catastro")
+RAW = os.path.join(BASE, "cache_catastro")          # cache local opcional (no se sube al repo)
 OUT = os.path.join(BASE, "data", "edificios")
-os.makedirs(RAW, exist_ok=True)
 os.makedirs(OUT, exist_ok=True)
 UA = {"User-Agent": "Mozilla/5.0"}
 URL_DNP = ("https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx/"
            "Consulta_DNPRC?Provincia=&Municipio=&RC={}")
 URL_BU = ("https://ovc.catastro.meh.es/INSPIRE/wfsBU.aspx?service=wfs&version=2&request=getfeature"
           "&STOREDQUERIE_ID=GetBuildingPartByParcel&refcat={}&srsname=EPSG::25830")
+OFFLINE = os.environ.get("OFFLINE") == "1"           # no preguntar al Catastro
+MAX_NUEVAS = int(os.environ.get("MAX_NUEVAS", "1500"))  # parcelas nuevas por ejecucion
+limite = threading.Event()                           # el Catastro ha cortado por peticiones/hora
 
 
-OFFLINE = os.environ.get("OFFLINE") == "1"      # solo cache (p. ej. si el Catastro limita peticiones/hora)
-
-
-def descarga(url, path):
-    if os.path.exists(path) and os.path.getsize(path) > 200:
-        return open(path, "rb").read()
-    if OFFLINE:
-        return b""
-    for i in range(4):
+def descarga(url, cache):
+    if os.path.exists(cache) and os.path.getsize(cache) > 200:
+        return open(cache, "rb").read().decode("utf8" if cache.endswith("_dnp.xml") else "latin-1", "ignore")
+    if OFFLINE or limite.is_set():
+        return None
+    for i in range(3):
         try:
             b = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=90).read()
+            if b"limite de peticiones" in b or b"Peticion denegada" in b:
+                limite.set()
+                return None
             if len(b) > 200:
-                open(path, "wb").write(b)
-                return b
-        except Exception:
-            pass
+                if os.path.isdir(RAW):
+                    open(cache, "wb").write(b)
+                return b.decode("utf8" if cache.endswith("_dnp.xml") else "latin-1", "ignore")
+        except Exception as e:
+            if "403" in str(e):
+                limite.set()
+                return None
         time.sleep(3 * (i + 1))
-    return b""
+    return None
 
 
 def tag(t, s):
@@ -58,78 +69,96 @@ def unidades(xml):
     for b in bloques:
         loint = re.search(r"<loint>(.*?)</loint>", b, re.S)
         li = loint.group(1) if loint else ""
-        out.append({"car": tag("car", b), "es": tag("es", li), "pt": tag("pt", li), "pu": tag("pu", li),
-                    "uso": tag("luso", b)})
+        out.append([tag("es", li), tag("pt", li), tag("pu", li), tag("luso", b)[:1], tag("car", b)])
     return out
 
 
-def partes(xml):
-    res = []
+def cuerpos_de(xml):
+    ps = []
     for bp in re.findall(r"<bu-ext2d:BuildingPart (.*?)</bu-ext2d:BuildingPart>", xml, re.S):
         sobre = re.search(r"numberOfFloorsAboveGround>(\d*)<", bp)
         bajo = re.search(r"numberOfFloorsBelowGround>(\d*)<", bp)
-        sobre = int(sobre.group(1)) if sobre and sobre.group(1) else 0
-        bajo = int(bajo.group(1)) if bajo and bajo.group(1) else 0
         anillos = []
         for pl in re.findall(r"<gml:posList[^>]*>([^<]+)</gml:posList>", bp):
             v = [float(x) for x in pl.split()]
             anillos.append(list(zip(v[0::2], v[1::2])))
         if anillos:
-            res.append({"sobre": sobre, "bajo": bajo, "anillos": anillos})
-    return res
+            ps.append([int(sobre.group(1)) if sobre and sobre.group(1) else 0,
+                       int(bajo.group(1)) if bajo and bajo.group(1) else 0, anillos])
+    # coordenadas locales (m) respecto al centro de la huella
+    pts = [p for _, _, an in ps for a in an for p in a]
+    cx = sum(p[0] for p in pts) / len(pts) if pts else 0
+    cy = sum(p[1] for p in pts) / len(pts) if pts else 0
+    cuerpos = [[s, b, [[[round(x - cx, 2), round(y - cy, 2)] for x, y in a] for a in an]] for s, b, an in ps]
+    return [round(cx, 1), round(cy, 1)], cuerpos
 
 
-def num(v):
-    try:
-        return float(str(v).replace(",", ".").strip())
-    except ValueError:
-        return 0
+def base_previa(pc):
+    """Unidades y volumetria ya conocidas de la parcela (ficha publicada con 'car'), o None."""
+    f = os.path.join(OUT, pc + ".json")
+    if not os.path.exists(f):
+        return None
+    j = json.load(open(f, encoding="utf8"))
+    if j.get("u") and len(j["u"][0]) < 6:            # ficha antigua sin 'car': no reutilizable
+        return None
+    return {"c": j["c"], "cuerpos": j["cuerpos"], "u": [[*u[:4], u[5]] for u in j["u"]],
+            "error": j.get("error"), "visto": j.get("visto")}
 
 
-vut = json.load(open(IDX, encoding="utf8"))      # rc18 -> [registro(s), plazas, alta, nº VUT]
-pcs = sorted({k[:14] for k in vut if re.fullmatch(r"[0-9A-Z]{14}", k[:14])})
-print(f"Parcelas con VUT: {len(pcs)}")
+vut = json.load(open(IDX, encoding="utf8"))
+por_pc = defaultdict(dict)
+for rc, v in vut.items():
+    if re.fullmatch(r"[0-9A-Z]{14}", rc[:14]):
+        por_pc[rc[:14]][rc[14:18]] = v
+pcs = sorted(por_pc)
+hoy = time.strftime("%Y-%m-%d")
+
+# fichas de parcelas que ya no tienen VUT
+borradas = 0
+for f in glob.glob(os.path.join(OUT, "*.json")):
+    if os.path.basename(f)[:-5] not in por_pc:
+        os.remove(f); borradas += 1
+
+nuevas = 0
+lock = threading.Lock()
 
 
 def procesa(pc):
-    dnp = descarga(URL_DNP.format(pc), os.path.join(RAW, pc + "_dnp.xml")).decode("utf8", "ignore")
-    bu = descarga(URL_BU.format(pc), os.path.join(RAW, pc + "_bu.xml")).decode("latin-1", "ignore")
-    if not dnp or not bu:                       # sin datos (limite del Catastro): no generar ficha incompleta
-        return pc, 0, 0, 0, 0
-    us = unidades(dnp)
-    ps = partes(bu)
-    # coordenadas locales (m) respecto al centro de la huella
-    pts = [p for parte in ps for a in parte["anillos"] for p in a]
-    cx = sum(p[0] for p in pts) / len(pts) if pts else 0
-    cy = sum(p[1] for p in pts) / len(pts) if pts else 0
-    cuerpos = [[parte["sobre"], parte["bajo"],
-                [[[round(x - cx, 2), round(y - cy, 2)] for x, y in a] for a in parte["anillos"]]]
-               for parte in ps]
-    filas, enc = [], 0
-    for u in us:
-        r = vut.get(pc + u["car"])
-        if r:
-            enc += r[3]
-        filas.append([u["es"], u["pt"], u["pu"], u["uso"][:1],
-                      r if r else 0])
-    total_vut = sum(v[3] for k, v in vut.items() if k.startswith(pc))
-    json.dump({"pc": pc, "c": [round(cx, 1), round(cy, 1)], "cuerpos": cuerpos, "u": filas, "vut": total_vut, "vut_cruzadas": enc},
-              open(os.path.join(OUT, pc + ".json"), "w", encoding="utf8"),
-              ensure_ascii=False, separators=(",", ":"))
-    return pc, len(us), len(ps), total_vut, enc
+    global nuevas
+    b = base_previa(pc)
+    if b is None:
+        dnp_c, bu_c = os.path.join(RAW, pc + "_dnp.xml"), os.path.join(RAW, pc + "_bu.xml")
+        en_cache = os.path.exists(dnp_c) and os.path.exists(bu_c)
+        if not en_cache and not OFFLINE:
+            with lock:
+                if nuevas >= MAX_NUEVAS:
+                    return pc, "pendiente"
+                nuevas += 1
+        dnp, bu = descarga(URL_DNP.format(pc), dnp_c), descarga(URL_BU.format(pc), bu_c)
+        if dnp is None or bu is None:
+            return pc, "pendiente"
+        c, cuerpos = cuerpos_de(bu)
+        u = unidades(dnp)
+        err = tag("des", dnp) if not u else None      # p. ej. "NO EXISTE NINGUN INMUEBLE..."
+        b = {"c": c, "cuerpos": cuerpos, "u": u, "error": err, "visto": hoy}
+    vs = por_pc[pc]
+    filas = [[es, pt, pu, uso, vs.get(car, 0), car] for es, pt, pu, uso, car in b["u"]]
+    j = {"pc": pc, "c": b["c"], "cuerpos": b["cuerpos"], "u": filas,
+         "vut": sum(v[3] for v in vs.values()),
+         "vut_cruzadas": sum(f[4][3] for f in filas if f[4]),
+         "visto": b.get("visto") or hoy}
+    if b.get("error"):
+        j["error"] = b["error"]
+    json.dump(j, open(os.path.join(OUT, pc + ".json"), "w", encoding="utf8"), ensure_ascii=False, separators=(",", ":"))
+    return pc, "ok"
 
 
-res = []
-with ThreadPoolExecutor(8) as ex:
-    for i, x in enumerate(ex.map(procesa, pcs)):
-        res.append(x)
-        if i % 50 == 0:
-            print(i, x, flush=True)
+with ThreadPoolExecutor(1 if OFFLINE else 6) as ex:
+    res = dict(ex.map(procesa, pcs))
 
-sin_u = [x for x in res if x[1] == 0]
-sin_bu = [x for x in res if x[2] == 0]
-desc = [x for x in res if x[3] != x[4]]
-print(f"Edificios: {len(res)} | sin unidades: {len(sin_u)} | sin volumetria: {len(sin_bu)} | "
-      f"con VUT sin cruzar: {len(desc)} ({sum(x[3] - x[4] for x in desc)} VUT)")
-print("Unidades totales:", sum(x[1] for x in res))
-print("Ejemplos descuadre:", desc[:10])
+pend = [p for p, s in res.items() if s == "pendiente"]
+print(f"Parcelas con VUT: {len(pcs)} | con ficha: {len(pcs) - len(pend)} | pendientes: {len(pend)} | "
+      f"consultadas al Catastro: {nuevas} | fichas borradas: {borradas}"
+      + (" | LIMITE DEL CATASTRO ALCANZADO" if limite.is_set() else ""))
+json.dump({"parcelas": len(pcs), "pendientes": len(pend), "fecha": hoy},
+          open(os.path.join(BASE, "data", "estado_edificios.json"), "w"))

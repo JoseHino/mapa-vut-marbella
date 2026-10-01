@@ -98,7 +98,9 @@ const META = /*__META__*/null;
 const fmt = n => n.toLocaleString('es-ES');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-document.getElementById('sub').textContent = `Registro de Turismo de Andalucía (RTA) · descarga ${META.fecha}`;
+const fd = f => f ? f.split('-').reverse().join('/') : '';
+document.getElementById('sub').textContent = `Registro de Turismo de Andalucía (RTA)` +
+  (META.rta ? ` a ${fd(META.rta)}` : '') + ` · se actualiza cada día (última comprobación ${META.fecha})`;
 k1.textContent = fmt(META.total); k2.textContent = fmt(META.plazas); k3.textContent = fmt(META.edificios);
 
 const map = L.map('map', { zoomControl:false, preferCanvas:true });

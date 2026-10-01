@@ -299,6 +299,11 @@ window.abrir3D = async d => {
       return;
     }
     const j = await res.json();
+    if (!j.u.length) {
+      load.textContent = `El Catastro no devuelve inmuebles para la parcela ${d[4]}` +
+        (j.error ? ` («${j.error.toLowerCase()}»): probablemente la referencia catastral del registro turístico es errónea.` : '.');
+      return;
+    }
     const A = analiza(j);
     panel(d, j, A);
     load.style.display = 'none';

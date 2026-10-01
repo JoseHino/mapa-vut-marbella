@@ -10,7 +10,7 @@ referencia catastral.
  - vut_index.json: VUT por referencia catastral, para generar_edificios.py (vista 3D).
 """
 
-import csv, json, os, re, urllib.parse, urllib.request
+import csv, json, os, re, sys, time, urllib.parse, urllib.request
 from collections import Counter, defaultdict
 from datetime import date
 from pyproj import Transformer
@@ -22,23 +22,40 @@ OUT_CSV = os.path.join(BASE, "VUT_Marbella_geolocalizadas.csv")
 OUT_IDX = os.path.join(BASE, "vut_index.json")
 
 
-def pagina(modo):
+def get_json(url, timeout):
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"})
+    return json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8"))
+
+
+def pagina(modo, size=8000):
+    # La API no pagina y con 10.000 registros suele colgarse: dos lotes de 8.000 (ASC y DESC)
     path = os.path.join(BASE, f"rta_{modo}.json")
-    if not os.path.exists(path) or os.path.getsize(path) < 1000:
-        q = {"id": "-", "object_type": "Vivienda de uso turístico", "category": "-", "group": "-",
-             "modality": "-", "province": "-", "municipality": "MARBELLA", "order_by": "id",
-             "mode": modo, "format": "json", "size": "10000"}
-        req = urllib.request.Request(API + "/search?" + urllib.parse.urlencode(q), headers={"Accept": "application/json"})
-        open(path, "wb").write(urllib.request.urlopen(req, timeout=1800).read())
-    return json.load(open(path, encoding="utf8"))
+    if os.environ.get("USE_CACHE") == "1" and os.path.exists(path):
+        return json.load(open(path, encoding="utf8"))
+    q = {"id": "-", "object_type": "Vivienda de uso turístico", "category": "-", "group": "-",
+         "modality": "-", "province": "-", "municipality": "MARBELLA", "order_by": "id",
+         "mode": modo, "format": "json", "size": str(size)}
+    for intento in range(4):
+        try:
+            d = get_json(API + "/search?" + urllib.parse.urlencode(q), 900)
+            json.dump(d, open(path, "w", encoding="utf8"), ensure_ascii=False)
+            return d
+        except Exception as e:
+            print(f"RTA {modo}: intento {intento + 1} fallido ({e})", flush=True)
+            time.sleep(60)
+    sys.exit("No se ha podido descargar el RTA; no se publica nada")
 
 
-# -- 1. Registro (la API devuelve como mucho 10.000 por consulta: ASC + DESC) --
+# -- 1. Registro ----------------------------------------------------------------
+try:
+    rta_fecha = str(get_json(API + "/search/lastUpdateData", 60).get("date") or "")[:10]
+except Exception:
+    rta_fecha = ""
 asc, desc = pagina("ASC"), pagina("DESC")
 recs = list({r["id"]: r for r in asc["results"] + desc["results"]}.values())
-print(f"RTA: {asc['total_hits']} VUT declaradas, {len(recs)} descargadas")
+print(f"RTA ({rta_fecha}): {asc['total_hits']} VUT declaradas, {len(recs)} descargadas")
 if len(recs) < asc["total_hits"]:
-    print("AVISO: faltan registros; hay que paginar de otra forma")
+    sys.exit("Faltan registros del RTA (¿más de 16.000 VUT?): hay que añadir otro lote; no se publica nada")
 
 tr = Transformer.from_crs("EPSG:25830", "EPSG:4326", always_xy=True)
 
@@ -117,7 +134,7 @@ anios = Counter(v["alta"][-4:] for v in puntos if v["alta"])
 cps = Counter(v["cp"] for v in puntos if v["cp"])
 meta = {"total": len(puntos), "plazas": sum(v["plazas"] for v in puntos), "edificios": len(data),
         "registro": len(recs), "sin_geo": sin_geo, "fecha": date.today().strftime("%d/%m/%Y"),
-        "rta": str(asc.get("last_update") or ""), "anios": sorted(anios.items()), "cps": cps.most_common(12)}
+        "rta": rta_fecha, "anios": sorted(anios.items()), "cps": cps.most_common(12)}
 print(f"Mapeadas {meta['total']} VUT, {meta['plazas']} plazas, {meta['edificios']} parcelas; sin coordenadas {sin_geo}")
 
 html = open(os.path.join(BASE, "plantilla.html"), encoding="utf8").read()

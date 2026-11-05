@@ -115,18 +115,81 @@ def calle(direccion):
     return re.split(r"\s+(Blq\.|Portal|Esc\.|Plta/Piso|Pta/Letra|Compl\.Dom\.)", direccion or "")[0].strip()
 
 
-puntos, edif, idx = [], defaultdict(list), {}
-sin_geo = 0
-for r in recs:
+# Unas 300 VUT vienen en el RTA sin coordenadas o con coordenadas fuera de Marbella
+# (errores de alta). Todas traen referencia catastral: se situan en el punto medio
+# de las demas VUT de su parcela o, si no hay, en el centro de la parcela segun el
+# Catastro INSPIRE (responde desde GitHub). Las parcelas consultadas se guardan en
+# geo_parcelas.json para no repetir consultas.
+GEO_CACHE = os.path.join(BASE, "geo_parcelas.json")
+INSPIRE = ("https://ovc.catastro.meh.es/INSPIRE/wfsCP.aspx?service=wfs&version=2&request=getfeature"
+           "&STOREDQUERIE_ID=GetParcel&refcat={}&srsname=EPSG::4326")
+
+
+def rc_de(r):
+    return re.sub(r"\s", "", str(r.get("catastral_ref") or "")).upper()
+
+
+def en_marbella(lat, lon):
+    return 36.40 < lat < 36.65 and -5.10 < lon < -4.70
+
+
+def parcela_catastro(pc):
+    for intento in range(3):
+        try:
+            req = urllib.request.Request(INSPIRE.format(pc), headers=UA)
+            t = urllib.request.urlopen(req, timeout=60).read().decode("latin-1")
+            m = re.search(r"<gml:posList[^>]*>([^<]+)</gml:posList>", t)
+            if not m:
+                return []          # el Catastro no conoce la parcela (RC mal escrita): no se repregunta
+            v = [float(n) for n in m.group(1).split()]
+            return [sum(v[0::2]) / len(v[0::2]), sum(v[1::2]) / len(v[1::2])]   # lat, lon
+        except Exception:
+            time.sleep(3 * (intento + 1))
+    return None
+
+
+coords, faltan = {}, []
+por_parcela = defaultdict(list)
+for i, r in enumerate(recs):
     x, y = num(r.get("coord_x")), num(r.get("coord_y"))
-    if not x or not y:
+    if x and y:
+        lon, lat = tr.transform(x, y)
+        if en_marbella(lat, lon):
+            coords[i] = (lat, lon)
+            por_parcela[rc_de(r)[:14]].append((lat, lon))
+            continue
+    faltan.append(i)
+
+geo_cache = json.load(open(GEO_CACHE, encoding="utf8")) if os.path.exists(GEO_CACHE) else {}
+por_vecinas = por_catastro = sin_geo = 0
+for i in faltan:
+    pc = rc_de(recs[i])[:14]
+    if len(pc) < 14:
         sin_geo += 1
         continue
-    lon, lat = tr.transform(x, y)
-    if not (36.40 < lat < 36.65 and -5.10 < lon < -4.70):
-        sin_geo += 1
+    if por_parcela.get(pc):
+        lst = por_parcela[pc]
+        coords[i] = (sum(a for a, _ in lst) / len(lst), sum(b for _, b in lst) / len(lst))
+        por_vecinas += 1
         continue
-    rc = re.sub(r"\s", "", str(r.get("catastral_ref") or "")).upper()
+    if pc not in geo_cache or geo_cache[pc] is None:
+        geo_cache[pc] = parcela_catastro(pc)
+    g = geo_cache[pc]
+    if g and en_marbella(g[0], g[1]):
+        coords[i] = (g[0], g[1])
+        por_catastro += 1
+    else:
+        sin_geo += 1
+json.dump(geo_cache, open(GEO_CACHE, "w", encoding="utf8"), sort_keys=True)
+print(f"Sin coordenadas validas en el RTA: {len(faltan)} -> por otras VUT de su parcela {por_vecinas}, "
+      f"por el Catastro {por_catastro}, sin situar {sin_geo}", flush=True)
+
+puntos, edif, idx = [], defaultdict(list), {}
+for i, r in enumerate(recs):
+    if i not in coords:
+        continue
+    lat, lon = coords[i]
+    rc = rc_de(r)
     pl = int(num(r.get("tot_gen_places")) or 0)
     v = {"lat": lat, "lon": lon, "reg": r.get("registration_code") or "", "dir": r.get("establishment_address") or "",
          "cp": str(r.get("postal_code") or ""), "plazas": pl, "habs": int(num(r.get("tot_gen_ua")) or 0),
@@ -164,7 +227,9 @@ heat = [[round(v["lat"], 5), round(v["lon"], 5), v["plazas"]] for v in puntos]
 anios = Counter(v["alta"][-4:] for v in puntos if v["alta"])
 cps = Counter(v["cp"] for v in puntos if v["cp"])
 meta = {"total": len(puntos), "plazas": sum(v["plazas"] for v in puntos), "edificios": len(data),
-        "registro": len(recs), "sin_geo": sin_geo, "fecha": date.today().strftime("%d/%m/%Y"),
+        "registro": len(recs), "plazas_registro": sum(int(num(r.get("tot_gen_places")) or 0) for r in recs),
+        "sin_geo": sin_geo, "por_parcela": por_vecinas + por_catastro,
+        "plazas_sin_geo": sum(int(num(r.get("tot_gen_places")) or 0) for i, r in enumerate(recs) if i not in coords), "fecha": date.today().strftime("%d/%m/%Y"),
         "rta": rta_fecha, "anios": sorted(anios.items()), "cps": cps.most_common(12)}
 print(f"Mapeadas {meta['total']} VUT, {meta['plazas']} plazas, {meta['edificios']} parcelas; sin coordenadas {sin_geo}")
 

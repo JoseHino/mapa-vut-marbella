@@ -36,6 +36,7 @@
   .barlab { display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:2px; }
   table.cp { width:100%; border-collapse:collapse; font-size:12px; }
   table.cp td { padding:2px 0; } table.cp td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  .aviso { font-size:12px; line-height:1.45; margin:8px 0 2px; padding:7px 9px; border-radius:6px; background:rgba(230,150,30,.12); border-left:3px solid #e6961e; }
   .src { font-size:11px; color:var(--muted); line-height:1.45; }
   .src a { color:var(--acc); }
   #toggle { display:none; }
@@ -69,6 +70,7 @@
     <div class="kpi"><b id="k2"></b><span>plazas</span></div>
     <div class="kpi"><b id="k3"></b><span>parcelas</span></div>
   </div>
+  <div class="aviso" id="aviso"></div>
   <div class="sec">
     <h2>Mapa de calor ponderado por</h2>
     <div class="seg"><button data-w="n" class="on">Nº de viviendas</button><button data-w="p">Nº de plazas</button></div>
@@ -101,7 +103,11 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const fd = f => f ? f.split('-').reverse().join('/') : '';
 document.getElementById('sub').textContent = `Registro de Turismo de Andalucía (RTA)` +
   (META.rta ? ` a ${fd(META.rta)}` : '') + ` · se actualiza cada día (última comprobación ${META.fecha})`;
-k1.textContent = fmt(META.total); k2.textContent = fmt(META.plazas); k3.textContent = fmt(META.edificios);
+/* Cifras oficiales del registro; el aviso dice cuántas no se pueden dibujar. */
+k1.textContent = fmt(META.registro); k2.textContent = fmt(META.plazas_registro ?? META.plazas); k3.textContent = fmt(META.edificios);
+aviso.innerHTML = META.sin_geo
+  ? `<b>${fmt(META.sin_geo)} VUT</b> (${fmt(META.plazas_sin_geo)} plazas) no aparecen ahora mismo en el mapa porque el RTA no publica su ubicación (ni coordenadas válidas ni referencia catastral que se pueda situar). En el mapa: ${fmt(META.total)} VUT.`
+  : `Todas las VUT del registro aparecen en el mapa.`;
 
 const map = L.map('map', { zoomControl:false, preferCanvas:true });
 map.fitBounds(L.latLngBounds(DATA.map(d => [d[0], d[1]])), { paddingTopLeft: innerWidth > 640 ? [330, 20] : [10, 10], paddingBottomRight:[20, 20] });
@@ -176,7 +182,7 @@ const antes = META.anios.filter(a => +a[0] < 2010).reduce((s, a) => s + a[1], 0)
 if (antes) barlab.insertAdjacentHTML('afterend', `<div class="src">Anteriores a 2010: ${fmt(antes)}</div>`);
 cps.innerHTML = META.cps.map(c => `<tr><td>${esc(c[0])}</td><td>${fmt(c[1])} (${(c[1] / META.registro * 100).toFixed(1)} %)</td></tr>`).join('');
 
-src.innerHTML = `<b>Fuentes oficiales.</b> Viviendas y posición: <a target="_blank" href="https://www.juntadeandalucia.es/datosabiertos/portal.html">Registro de Turismo de Andalucía</a> (Junta de Andalucía, API OpenRTA), ${fmt(META.registro)} VUT inscritas en Marbella, cada una con sus coordenadas.
+src.innerHTML = `<b>Fuentes oficiales.</b> Viviendas y posición: <a target="_blank" href="https://www.juntadeandalucia.es/datosabiertos/portal.html">Registro de Turismo de Andalucía</a> (Junta de Andalucía, API OpenRTA), ${fmt(META.registro)} VUT inscritas en Marbella. Cada una se sitúa con sus coordenadas del RTA${META.por_parcela ? `; ${fmt(META.por_parcela)} que el RTA publica sin coordenadas o con coordenadas fuera del municipio se sitúan en su parcela catastral` : ''}.
   Edificios y vista 3D: <a target="_blank" href="https://www.catastro.hacienda.gob.es/">Dirección General del Catastro</a>, a partir de la referencia catastral de cada vivienda; las VUT se agrupan por parcela (en urbanizaciones, una parcela puede tener varios bloques).
   ${META.sin_geo ? `${META.sin_geo} VUT sin coordenadas válidas no aparecen en el mapa.` : ''}`;
 
